@@ -1,0 +1,10 @@
+# Tus fichas son privadas: no se suben
+.venv/
+.env
+__pycache__/
+
+fichas/
+logs/
+gastos.jsonl
+fuentes/*.md
+!fuentes/LEEME.md
