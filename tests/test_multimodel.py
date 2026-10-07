@@ -67,5 +67,52 @@ class MultimodelTests(unittest.TestCase):
                 self.assertEqual(record['agentes'][1]['usd'], 0)
 
 
+class AuditoriaTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        (Path(directory.name) / 'NEAR-anuncios.md').write_text('texto')
+        fuentes = patch.object(modulo, 'FUENTES', Path(directory.name))
+        fuentes.start()
+        self.addCleanup(fuentes.stop)
+        self.eventos = []
+
+    def revisar(self, raw, veredicto=None):
+        llamadas = []
+        def kickoff(mensaje, response_format):
+            llamadas.append(mensaje)
+            return SimpleNamespace(pydantic=veredicto)
+        revisar = modulo.auditoria(SimpleNamespace(kickoff=kickoff),
+                                   lambda nombre, **datos: self.eventos.append((nombre, datos)))
+        return revisar(SimpleNamespace(pydantic=None, raw=raw)), llamadas
+
+    def analisis(self, fuente):
+        return json.dumps({'contraargumentos': [{'argumento': 'a', 'fuente': fuente}],
+                           'resumen': 'r'})
+
+    def test_invented_source_is_rejected_before_calling_auditor(self):
+        (ok, motivo), llamadas = self.revisar(self.analisis('inventada.md'))
+        self.assertFalse(ok)
+        self.assertIn('inventada.md', motivo)
+        self.assertEqual(llamadas, [])
+        self.assertEqual(self.eventos[0][1]['por'], 'reglas')
+
+    def test_auditor_rejection_and_approval(self):
+        rechazo = modulo.Veredicto(aprobado=False, motivos=['la fuente no lo dice'])
+        (ok, motivo), _ = self.revisar(self.analisis('NEAR-anuncios.md'), rechazo)
+        self.assertFalse(ok)
+        self.assertIn('la fuente no lo dice', motivo)
+        (ok, salida), _ = self.revisar('```json\n' + self.analisis('NEAR-anuncios.md') + '\n```',
+                                       modulo.Veredicto(aprobado=True))
+        self.assertTrue(ok)
+        self.assertEqual(modulo.Analisis.model_validate_json(salida).contraargumentos[0].fuente,
+                         'NEAR-anuncios.md')
+
+    def test_missing_verdict_fails_closed(self):
+        (ok, _), _ = self.revisar(self.analisis('NEAR-anuncios.md'), None)
+        self.assertFalse(ok)
+        self.assertFalse(self.eventos[-1][1]['aprobado'])
+
+
 if __name__ == '__main__':
     unittest.main()

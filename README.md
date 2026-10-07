@@ -46,14 +46,20 @@ y [Kimi API](https://platform.kimi.ai/docs/overview).
 
 ## Modelos por agente en Contrapeso
 
-`contrapeso_m1.py` usa `crewai_llm()` de `llm.py`. Cada agente recibe una
-instancia independiente. Sin ajustes adicionales, ambos heredan `LLM_PROVIDER`
-y el modelo correspondiente (`OLLAMA_MODEL` o `KIMI_MODEL`).
+`contrapeso_m1.py` organiza tres agentes con los roles de la Milpa:
+el director (Maíz) delega, el investigador (Frijol) busca contraargumentos
+y el auditor (Calabaza) revisa el análisis. Si el auditor lo rechaza, el
+director vuelve a delegar con sus motivos, hasta `MAX_RECHAZOS` veces.
 
-Para separarlos, configura `DIRECTOR_LLM_PROVIDER` y
-`INVESTIGADOR_LLM_PROVIDER` (`ollama` o `kimi`), y opcionalmente
-`DIRECTOR_MODELO` e `INVESTIGADOR_MODELO`. La antigua variable `MODELO`
-ya no se utiliza. Las conexiones y claves siguen siendo las del proveedor.
+Cada agente recibe su propia instancia de `crewai_llm()` de `llm.py`. Sin
+ajustes adicionales, los tres heredan `LLM_PROVIDER` y el modelo
+correspondiente (`OLLAMA_MODEL` o `KIMI_MODEL`).
+
+Para separarlos, configura `DIRECTOR_LLM_PROVIDER`,
+`INVESTIGADOR_LLM_PROVIDER` y `AUDITOR_LLM_PROVIDER` (`ollama` o `kimi`), y
+opcionalmente `DIRECTOR_MODELO`, `INVESTIGADOR_MODELO` y `AUDITOR_MODELO`.
+La antigua variable `MODELO` ya no se utiliza. Las conexiones y claves
+siguen siendo las del proveedor.
 
 Para cada agente remoto debes definir `<AGENTE>_PRECIO_ENTRADA_USD_M` y
 `<AGENTE>_PRECIO_SALIDA_USD_M` con las tarifas de su modelo por millón de
@@ -64,9 +70,20 @@ La estimación no distingue descuentos de caché ni otros cargos.
 El freno mensual se comprueba antes de comenzar; no garantiza un límite
 estricto durante la ejecución.
 
+Cada corrida deja dos archivos en `logs/`: el log de CrewAI
+(`<ficha>-<fecha>.log`) y el de decisiones (`<ficha>-<fecha>-decisiones.jsonl`),
+con los modelos y límites usados, cada veredicto del auditor, errores,
+costo y tu respuesta a la pregunta de guardar.
+
 El módulo también requiere `ficha.py` con la constante `CARPETA`, las fichas
 JSON correspondientes y archivos autorizados en `fuentes/`. Los modelos
 elegidos deben admitir herramientas y la salida estructurada utilizada.
+
+## Pruebas
+
+```sh
+PYTHONPATH=. python -m unittest tests/test_multimodel.py
+```
 
 ## Reinstalación del entorno
 
