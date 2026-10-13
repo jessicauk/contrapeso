@@ -5,7 +5,8 @@ Uso:
     python ingesta.py                   # trae los posts nuevos de todas las cuentas
     python ingesta.py --cuenta NOMBRE   # solo una cuenta de cuentas.yaml
     python ingesta.py --gasto           # gasto del mes contra el tope (no llama a X)
-    python ingesta.py --verificar       # recalcula la cadena de hashes de la bitácora
+    python ingesta.py --verificar       # recalcula la cadena de hashes y revisa las anclas
+    python ingesta.py --anclar          # sella el último hash fuera de tu control (OpenTimestamps)
 
 Garantías (en CÓDIGO y en la BASE, no en la disciplina):
     - tweets_crudos y eventos tienen triggers que abortan cualquier UPDATE o DELETE.
@@ -14,6 +15,9 @@ Garantías (en CÓDIGO y en la BASE, no en la disciplina):
     - El tope mensual se revisa ANTES de cada llamada con el peor caso posible.
     - Una cuenta nueva solo trae sus posts más recientes, nunca su historial.
     - Si una cuenta falla, se registra el error y se sigue con las demás.
+    - La cadena sola no detecta que se borren los últimos eventos ni que se reescriba completa
+      con hashes recalculados. --anclar guarda el último hash en anclas/ y, si está instalado
+      opentimestamps-client, lo sella en Bitcoin: una prueba que ni tú puedes modificar.
 
 Variables (.env o exportadas):
     X_BEARER               token Bearer de la API de X (obligatorio para ingerir)
@@ -25,7 +29,9 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -143,7 +149,105 @@ def verificar(con: sqlite3.Connection) -> list[str]:
             if digesto_tweets(con, d["ids_nuevos"]) != d["digesto"]:
                 errores.append(f"evento {n}: los posts de @{d['username']} fueron alterados")
         prev, esperado = h, n + 1
+    return errores + verificar_anclas(con)
+
+
+# ---------------- Anclaje externo ----------------
+def carpeta_anclas(con: sqlite3.Connection) -> Path | None:
+    """anclas/ junto al archivo de la base (así cada base tiene las suyas)."""
+    archivo = con.execute("PRAGMA database_list").fetchone()[2]
+    return Path(archivo).parent / "anclas" if archivo else None
+
+
+def comando_ots() -> str | None:
+    """`ots` del entorno virtual (cron no lo activa) o del PATH."""
+    local = Path(sys.executable).parent / "ots"
+    return str(local) if local.exists() else shutil.which("ots")
+
+
+def leer_ancla(ruta: Path) -> tuple[int, str]:
+    partes = dict(p.split("=", 1) for p in ruta.read_text(encoding="utf-8").strip().split("|")[1:])
+    return int(partes["evento"]), partes["hash"]
+
+
+def anclar(con: sqlite3.Connection, ejecutar=subprocess.run) -> Path:
+    """Escribe el último hash en anclas/ancla_<n>.txt y lo sella con OpenTimestamps si se puede.
+    El sello prueba que en esa fecha la bitácora ya llegaba a ese hash."""
+    fila = con.execute("SELECT n, hash FROM eventos ORDER BY n DESC LIMIT 1").fetchone()
+    if not fila:
+        raise ConfigInvalida("La bitácora está vacía: no hay nada que anclar.")
+    n, h = fila
+    carpeta = carpeta_anclas(con)
+    carpeta.mkdir(exist_ok=True)
+    ruta = carpeta / f"ancla_{n:06d}.txt"
+    if ruta.exists():
+        raise ConfigInvalida(f"El evento {n} ya está anclado en {ruta.name}.")
+    ruta.write_text(f"contrapeso|evento={n}|hash={h}|fecha={ahora()}\n", encoding="utf-8")
+    print(f"Ancla escrita: {ruta}")
+    sellado, ots = False, comando_ots()
+    if ots:
+        try:
+            r = ejecutar([ots, "stamp", str(ruta)], capture_output=True, text=True, timeout=120)
+            sellado = r.returncode == 0
+            detalle = (r.stderr or r.stdout).strip()[:300]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            detalle = str(e)
+        print("Sellada con OpenTimestamps. Bitcoin la confirma en unas horas; luego corre --verificar."
+              if sellado else f"OpenTimestamps falló: {detalle}. El ancla queda solo local.")
+    else:
+        print("OpenTimestamps no está instalado: el ancla queda solo local.\n"
+              "Instálalo con: pip install opentimestamps-client")
+    registrar(con, "ancla", evento_anclado=n, hash=h, archivo=ruta.name, sellado_ots=sellado)
+    return ruta
+
+
+def verificar_anclas(con: sqlite3.Connection) -> list[str]:
+    """Lo que la cadena sola no ve: bitácora truncada, reescrita, o anclas borradas."""
+    carpeta, errores = carpeta_anclas(con), []
+    if not carpeta:
+        return errores
+    for ruta in sorted(carpeta.glob("ancla_*.txt")):
+        try:
+            n, h = leer_ancla(ruta)
+        except (ValueError, KeyError, OSError):
+            errores.append(f"{ruta.name}: archivo de ancla ilegible")
+            continue
+        fila = con.execute("SELECT hash FROM eventos WHERE n = ?", (n,)).fetchone()
+        if fila is None:
+            errores.append(f"{ruta.name}: el evento {n} ya no existe (bitácora truncada)")
+        elif fila[0] != h:
+            errores.append(f"{ruta.name}: el hash del evento {n} cambió (bitácora reescrita)")
+    for n, datos in con.execute("SELECT n, datos FROM eventos WHERE tipo = 'ancla'"):
+        if not (carpeta / json.loads(datos)["archivo"]).exists():
+            errores.append(f"evento {n}: falta el archivo {json.loads(datos)['archivo']} en anclas/")
     return errores
+
+
+def estado_sellos(con: sqlite3.Connection, ejecutar=subprocess.run) -> list[str]:
+    """Estado en Bitcoin de cada sello .ots. No poder verificar no es lo mismo que alteración."""
+    carpeta, ots, lineas = carpeta_anclas(con), comando_ots(), []
+    for ruta in sorted(carpeta.glob("ancla_*.txt")) if carpeta and carpeta.exists() else []:
+        prueba = ruta.with_name(ruta.name + ".ots")
+        if not prueba.exists():
+            lineas.append(f"{ruta.name}: sin sello externo (solo local)")
+            continue
+        if not ots:
+            lineas.append(f"{ruta.name}: tiene sello .ots; instala opentimestamps-client para verificarlo")
+            continue
+        try:
+            ejecutar([ots, "upgrade", str(prueba)], capture_output=True, text=True, timeout=120)
+            r = ejecutar([ots, "verify", str(prueba)], capture_output=True, text=True, timeout=120)
+            salida = (r.stdout + r.stderr).strip()
+        except (OSError, subprocess.TimeoutExpired) as e:
+            r, salida = None, str(e)
+        if r is not None and r.returncode == 0 and "Success" in salida:
+            lineas.append(f"{ruta.name}: confirmada en Bitcoin")
+        elif "pending" in salida.lower():
+            lineas.append(f"{ruta.name}: sello pendiente de confirmación en Bitcoin")
+        else:
+            ultima = salida.splitlines()[-1][:120] if salida else "sin salida"
+            lineas.append(f"{ruta.name}: no se pudo verificar en Bitcoin ({ultima})")
+    return lineas
 
 
 # ---------------- Configuración ----------------
@@ -376,7 +480,8 @@ def main(argv=None) -> int:
     grupo = ap.add_mutually_exclusive_group()
     grupo.add_argument("--cuenta", help="ingerir solo esta cuenta de cuentas.yaml")
     grupo.add_argument("--gasto", action="store_true", help="mostrar el gasto del mes")
-    grupo.add_argument("--verificar", action="store_true", help="verificar la cadena de hashes")
+    grupo.add_argument("--verificar", action="store_true", help="verificar la cadena y las anclas")
+    grupo.add_argument("--anclar", action="store_true", help="sellar el último hash fuera de tu control")
     args = ap.parse_args(argv)
     con = conectar()
     try:
@@ -387,6 +492,11 @@ def main(argv=None) -> int:
                 print("La cadena NO es íntegra:\n  - " + "\n  - ".join(errores))
                 return 1
             print(f"Cadena íntegra: {total} eventos verificados.")
+            for linea in estado_sellos(con) or ["Sin anclas todavía (corre --anclar)."]:
+                print(f"  · {linea}")
+            return 0
+        if args.anclar:
+            anclar(con)
             return 0
         tope = leer_tope()
         if args.gasto:

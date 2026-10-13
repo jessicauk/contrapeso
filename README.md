@@ -110,7 +110,8 @@ tiene, el script se niega a correr.
 python ingesta.py --cuenta TraderSteve_   # primera prueba con una sola cuenta
 python ingesta.py --gasto                 # gasto del mes contra CONTRAPESO_TOPE_USD
 python ingesta.py                         # todas las cuentas
-python ingesta.py --verificar             # recalcula la cadena de hashes
+python ingesta.py --verificar             # recalcula la cadena y revisa las anclas
+python ingesta.py --anclar                # sella el último hash fuera de tu control
 ```
 
 Requiere `X_BEARER`, `X_PRECIO_POST_USD` y `X_PRECIO_USUARIO_USD` en `.env`.
@@ -131,6 +132,25 @@ Requiere `X_BEARER`, `X_PRECIO_POST_USD` y `X_PRECIO_USUARIO_USD` en `.env`.
   fallas de red y los errores 5xx se reintentan con espera creciente (2 s, 4 s;
   `MAX_INTENTOS` = 3). Ante un 429, se espera una sola vez hasta
   `x-rate-limit-reset` (máximo 15 minutos). Otros 4xx no se reintentan.
+
+### Anclaje externo
+
+La cadena de hashes detecta si se edita un evento, pero no si se borran los
+últimos eventos ni si alguien reescribe la bitácora completa recalculando los
+hashes. `--anclar` guarda el número y el hash del último evento en
+`anclas/ancla_<n>.txt`. Si está instalado `opentimestamps-client`
+(`pip install opentimestamps-client`), además lo sella en la blockchain de
+Bitcoin: esa prueba de fecha no la puede modificar nadie, ni tú.
+
+`--verificar` revisa que cada ancla coincida con la bitácora. Si no coincide,
+avisa que la bitácora fue truncada o reescrita. También avisa si falta el
+archivo de un ancla registrada. Además muestra el estado de cada sello: solo
+local, pendiente o confirmado en Bitcoin. La confirmación tarda unas horas, y
+no poder consultarla no se cuenta como alteración.
+
+Al sellar, solo se envía el hash a los servidores públicos de
+OpenTimestamps; ningún post ni dato tuyo. Las anclas solo contienen hashes,
+así que puedes subirlas a git como un testigo más.
 
 Corrida diaria a las 8:00 con cron (`crontab -e`):
 
@@ -228,7 +248,7 @@ python resultados.py --verificar  # cadena + predicciones + resultados
 Cron diario completo:
 
 ```cron
-0 8 * * * cd /ruta/a/CONTRAPESO && .venv/bin/python ingesta.py >> logs/ingesta.log 2>&1; .venv/bin/python extractor.py >> logs/extractor.log 2>&1; .venv/bin/python resultados.py >> logs/resultados.log 2>&1
+0 8 * * * cd /ruta/a/CONTRAPESO && .venv/bin/python ingesta.py >> logs/ingesta.log 2>&1; .venv/bin/python extractor.py >> logs/extractor.log 2>&1; .venv/bin/python resultados.py >> logs/resultados.log 2>&1; .venv/bin/python ingesta.py --anclar >> logs/anclas.log 2>&1
 ```
 
 Pruebas: `PYTHONPATH=. python -m unittest tests/test_resultados.py`

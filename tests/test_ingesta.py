@@ -4,6 +4,8 @@ import sqlite3
 import requests
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 
@@ -158,6 +160,81 @@ class IngestaTests(unittest.TestCase):
         ruta.write_text("cuentas:\n  - username: ana\n    razon: ''\n", encoding="utf-8")
         with self.assertRaises(ingesta.ConfigInvalida):
             ingesta.cargar_cuentas(ruta)
+
+
+class AnclasTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.con = ingesta.conectar(Path(self.tmp.name) / "t.db")
+        self.addCleanup(self.con.close)
+        self.anclas = Path(self.tmp.name).resolve() / "anclas"
+        for i in range(3):
+            ingesta.registrar(self.con, "prueba", i=i)
+        sin_ots = patch("ingesta.comando_ots", return_value=None)
+        sin_ots.start()
+        self.addCleanup(sin_ots.stop)
+
+    def reescribir(self, sql):
+        self.con.execute("DROP TRIGGER IF EXISTS eventos_sin_delete")
+        self.con.execute("DROP TRIGGER IF EXISTS eventos_sin_update")
+        self.con.execute(sql)
+
+    def test_ancla_local_y_verificacion(self):
+        ruta = ingesta.anclar(self.con)
+        self.assertEqual(ruta.resolve(), self.anclas / "ancla_000003.txt")
+        self.assertEqual(ingesta.leer_ancla(ruta)[0], 3)
+        self.assertEqual(ingesta.verificar(self.con), [])
+        ultimo = self.con.execute("SELECT tipo, datos FROM eventos ORDER BY n DESC LIMIT 1").fetchone()
+        self.assertEqual(ultimo[0], "ancla")
+        self.assertIn('"sellado_ots": false', ultimo[1])
+        # el mismo evento no se ancla dos veces (el último ahora es el 4, "ancla")
+        (self.anclas / "ancla_000004.txt").write_text("ocupado")
+        with self.assertRaises(ingesta.ConfigInvalida):
+            ingesta.anclar(self.con)
+
+    def test_detecta_truncamiento(self):
+        ingesta.anclar(self.con)
+        self.reescribir("DELETE FROM eventos WHERE n >= 3")
+        self.assertEqual(ingesta.verificar(self.con)[0], "ancla_000003.txt: el evento 3 ya no existe "
+                                                         "(bitácora truncada)")
+
+    def test_detecta_reescritura_completa(self):
+        ingesta.anclar(self.con)
+        # reescribe toda la cadena con hashes recalculados: la cadena sola cuadra, el ancla no
+        self.reescribir("DELETE FROM eventos")
+        for i in range(3):
+            ingesta.registrar(self.con, "prueba", i=i * 10)
+        errores = ingesta.verificar(self.con)
+        self.assertTrue(any("bitácora reescrita" in e for e in errores))
+        self.assertTrue(all("cadena" not in e for e in errores))
+
+    def test_detecta_ancla_borrada(self):
+        ruta = ingesta.anclar(self.con)
+        ruta.unlink()
+        self.assertTrue(any("falta el archivo ancla_000003.txt" in e for e in ingesta.verificar(self.con)))
+
+    def test_sello_ots(self):
+        llamadas = []
+
+        def ots(cmd, **kw):
+            llamadas.append(cmd[1])
+            if cmd[1] == "stamp":
+                Path(cmd[2] + ".ots").write_bytes(b"ots")
+            salida = "Pending confirmation in Bitcoin blockchain" if cmd[1] == "verify" else ""
+            return SimpleNamespace(returncode=1 if cmd[1] == "verify" else 0, stdout="", stderr=salida)
+
+        with patch("ingesta.comando_ots", return_value="ots"):
+            ingesta.anclar(self.con, ejecutar=ots)
+            estado = ingesta.estado_sellos(self.con, ejecutar=ots)
+        self.assertEqual(llamadas, ["stamp", "upgrade", "verify"])
+        self.assertIn("pendiente de confirmación", estado[0])
+        self.assertIn('"sellado_ots": true', self.con.execute(
+            "SELECT datos FROM eventos WHERE tipo = 'ancla'").fetchone()[0])
+
+    def test_sin_ots_no_falla(self):
+        ingesta.anclar(self.con)
+        self.assertEqual(ingesta.estado_sellos(self.con), ["ancla_000003.txt: sin sello externo (solo local)"])
 
 
 if __name__ == "__main__":
