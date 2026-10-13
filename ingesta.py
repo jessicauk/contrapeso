@@ -43,9 +43,11 @@ DB = BASE / "ingesta.db"
 CUENTAS = BASE / "cuentas.yaml"
 MAX_POR_CUENTA = 20           # L. posts máximos por cuenta en cada corrida
 MAX_ESPERA_LIMITE = 900       # L. segundos que se acepta esperar a que X libere el límite
+MAX_INTENTOS = 3              # I. intentos por llamada ante fallas de red o errores 5xx
 TIMEOUT = 30                  # segundos por petición HTTP
 TOPE_PREDETERMINADO = 5.00
-CAMPOS_TWEET = "created_at,author_id,conversation_id,lang,public_metrics,referenced_tweets,entities"
+CAMPOS_TWEET = ("created_at,author_id,conversation_id,lang,public_metrics,referenced_tweets,entities,"
+                "note_tweet")  # note_tweet: texto completo de los posts largos
 GENESIS = "0" * 64
 
 ESQUEMA = """
@@ -239,17 +241,32 @@ class ClienteX:
         if gastado + peor_caso > self.tope:
             raise TopeAlcanzado(f"gastado ${gastado:.4f} + peor caso ${peor_caso:.4f} "
                                 f"superaría el tope de ${self.tope:.2f}")
-        for intento in (1, 2):
-            r = self.sesion.get(f"{API}{ruta}", params=params, timeout=TIMEOUT)
-            if r.status_code != 429 or intento == 2:
-                break
-            # X no usa Retry-After: x-rate-limit-reset es el epoch en que se libera el límite.
-            reset = int(r.headers.get("x-rate-limit-reset", 0) or 0)
-            espera = max(reset - time.time(), 0) + 1
-            if espera > MAX_ESPERA_LIMITE:
-                break
-            print(f"  Límite de tasa de X: espero {espera:.0f} s.")
-            self.dormir(espera)
+        esperado_limite = False
+        for intento in range(1, MAX_INTENTOS + 1):
+            ultimo = intento == MAX_INTENTOS
+            try:
+                r = self.sesion.get(f"{API}{ruta}", params=params, timeout=TIMEOUT)
+            except requests.RequestException as e:
+                if ultimo:
+                    raise RuntimeError(f"error de red en {ruta}: {e}") from e
+                print(f"  Error de red ({e}); reintento en {2 ** intento} s.")
+                self.dormir(2 ** intento)
+                continue
+            if r.status_code == 429 and not esperado_limite and not ultimo:
+                # X no usa Retry-After: x-rate-limit-reset es el epoch en que se libera el límite.
+                reset = int(r.headers.get("x-rate-limit-reset", 0) or 0)
+                espera = max(reset - time.time(), 0) + 1
+                if espera > MAX_ESPERA_LIMITE:
+                    break
+                print(f"  Límite de tasa de X: espero {espera:.0f} s.")
+                self.dormir(espera)
+                esperado_limite = True  # una sola espera larga por llamada
+                continue
+            if 500 <= r.status_code < 600 and not ultimo:
+                print(f"  X respondió {r.status_code}; reintento en {2 ** intento} s.")
+                self.dormir(2 ** intento)
+                continue
+            break  # 200, otro 4xx (no tiene caso reintentar) o último intento
         if r.status_code != 200:
             raise RuntimeError(f"X respondió {r.status_code} en {ruta}: {r.text[:300]}")
         cuerpo = r.json()
@@ -257,12 +274,14 @@ class ClienteX:
         registrar(self.con, "llamada_x", ruta=ruta.split("/")[1], usd=round(usd, 6))
         return cuerpo
 
-    def user_id(self, username: str) -> str:
-        cuerpo = self._get(f"/users/by/username/{username}", {}, self.precio_usuario,
-                           lambda c: self.precio_usuario if "data" in c else 0.0)
-        if "data" not in cuerpo:
-            raise RuntimeError(f"X no encontró a @{username}: {cuerpo.get('errors')}")
-        return cuerpo["data"]["id"]
+    def user_ids(self, usernames: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+        """Resuelve hasta 100 cuentas en una sola llamada: ({username: id}, {username: error})."""
+        cuerpo = self._get("/users/by", {"usernames": ",".join(usernames)},
+                           len(usernames) * self.precio_usuario,
+                           lambda c: len(c.get("data", [])) * self.precio_usuario)
+        ids = {u["username"].lower(): u["id"] for u in cuerpo.get("data", [])}
+        errores = {u: "X no la encontró o está suspendida" for u in usernames if u not in ids}
+        return ids, errores
 
     def posts(self, user_id: str, since_id: int | None, limite: int) -> list[dict]:
         """Hasta `limite` posts. Sin since_id (cuenta nueva) solo una página: lo más reciente."""
@@ -286,10 +305,6 @@ class ClienteX:
 # ---------------- Ingesta ----------------
 def ingerir_cuenta(con: sqlite3.Connection, x: ClienteX, username: str) -> int:
     user_id = con.execute("SELECT user_id FROM cuentas WHERE username = ?", (username,)).fetchone()[0]
-    if not user_id:
-        user_id = x.user_id(username)
-        con.execute("UPDATE cuentas SET user_id = ? WHERE username = ?", (user_id, username))
-        con.commit()
     since_id = con.execute("SELECT MAX(id) FROM tweets_crudos WHERE user_id = ?", (user_id,)).fetchone()[0]
     nuevos = []
     for p in x.posts(user_id, since_id, MAX_POR_CUENTA):
@@ -304,12 +319,41 @@ def ingerir_cuenta(con: sqlite3.Connection, x: ClienteX, username: str) -> int:
     return len(nuevos)
 
 
+def resolver_ids(con: sqlite3.Connection, x: ClienteX, usernames: list[str]) -> dict[str, str]:
+    """Busca en lote los user_id que faltan. Devuelve {username: error} de las que no se resolvieron."""
+    faltan = [u for u in usernames
+              if not con.execute("SELECT user_id FROM cuentas WHERE username = ?", (u,)).fetchone()[0]]
+    errores = {}
+    for i in range(0, len(faltan), 100):  # X acepta hasta 100 usernames por llamada
+        lote = faltan[i:i + 100]
+        try:
+            ids, no_encontradas = x.user_ids(lote)
+        except TopeAlcanzado:
+            raise
+        except Exception as e:
+            ids, no_encontradas = {}, {u: str(e) for u in lote}
+        for u, uid in ids.items():
+            con.execute("UPDATE cuentas SET user_id = ? WHERE username = ?", (uid, u))
+        con.commit()
+        errores.update(no_encontradas)
+    return errores
+
+
 def correr(con: sqlite3.Connection, x: ClienteX, cuentas: dict[str, str], solo: str | None = None) -> dict:
     sincronizar_cuentas(con, cuentas)
     objetivo = [solo] if solo else list(cuentas)
     registrar(con, "corrida_inicio", cuentas=objetivo)
     resumen = {"nuevos": {}, "errores": {}, "tope": None}
-    for usuario in objetivo:
+    try:
+        sin_id = resolver_ids(con, x, objetivo)
+    except TopeAlcanzado as e:
+        resumen["tope"], sin_id, objetivo = str(e), {}, []
+        print(f"Tope de gasto alcanzado, se detiene la corrida: {e}")
+    for usuario, error in sin_id.items():
+        resumen["errores"][usuario] = error
+        registrar(con, "cuenta_error", username=usuario, error=error[:500])
+        print(f"@{usuario}: ERROR {error}")
+    for usuario in [u for u in objetivo if u not in sin_id]:
         try:
             resumen["nuevos"][usuario] = n = ingerir_cuenta(con, x, usuario)
             print(f"@{usuario}: {n} posts nuevos")

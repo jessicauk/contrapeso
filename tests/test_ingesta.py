@@ -1,5 +1,7 @@
 import json
 import sqlite3
+
+import requests
 import time
 import unittest
 from pathlib import Path
@@ -30,10 +32,14 @@ class XFalso:
         self.llamadas.append((url, dict(params or {})))
         for clave, respuestas in self.fallas.items():
             if clave in url and respuestas:
-                return respuestas.pop(0)
-        if "/users/by/username/" in url:
-            nombre = url.rsplit("/", 1)[1]
-            return Respuesta(200, {"data": {"id": self.usuarios[nombre]}})
+                r = respuestas.pop(0)
+                if isinstance(r, Exception):
+                    raise r
+                return r
+        if url.endswith("/users/by"):
+            nombres = params["usernames"].split(",")
+            return Respuesta(200, {"data": [{"id": self.usuarios[n], "username": n.capitalize()}
+                                            for n in nombres if n in self.usuarios]})
         uid = url.split("/users/")[1].split("/")[0]
         datos = [p for p in self.posts[uid] if int(p["id"]) > int(params.get("since_id", 0))]
         datos = datos[: params["max_results"]]
@@ -65,11 +71,12 @@ class IngestaTests(unittest.TestCase):
         # la segunda corrida usa since_id y no vuelve a buscar el user_id
         ultima = [p for u, p in self.api.llamadas if "/users/1/tweets" in u][-1]
         self.assertEqual(ultima["since_id"], 105)
-        self.assertEqual(sum("/by/username/ana" in u for u, _ in self.api.llamadas), 1)
+        busquedas = [p for u, p in self.api.llamadas if u.endswith("/users/by")]
+        self.assertEqual(busquedas, [{"usernames": "ana,beto"}])  # una sola llamada, en lote
         self.assertEqual(ingesta.verificar(self.con), [])
 
     def test_cuenta_que_falla_no_detiene_a_las_demas(self):
-        self.api.fallas["/users/1/tweets"] = [Respuesta(500, {"title": "boom"})]
+        self.api.fallas["/users/1/tweets"] = [Respuesta(403, {"title": "prohibido"})]
         r = ingesta.correr(self.con, self.cliente(), self.cuentas)
         self.assertIn("ana", r["errores"])
         self.assertEqual(r["nuevos"], {"beto": 1})
@@ -84,6 +91,27 @@ class IngestaTests(unittest.TestCase):
         self.assertEqual(r["nuevos"]["beto"], 1)
         self.assertEqual(len(esperas), 1)
         self.assertTrue(5 < esperas[0] <= 12)
+
+    def test_reintenta_red_y_5xx_con_espera_creciente(self):
+        esperas = []
+        self.api.fallas["/users/2/tweets"] = [requests.ConnectionError("sin red"), Respuesta(503)]
+        x = ingesta.ClienteX(self.con, "tok", 0.01, 0.02, 5, sesion=self.api, dormir=esperas.append)
+        r = ingesta.correr(self.con, x, self.cuentas)
+        self.assertEqual(r["nuevos"]["beto"], 1)
+        self.assertEqual(esperas, [2, 4])
+
+    def test_5xx_persistente_falla_solo_esa_cuenta(self):
+        self.api.fallas["/users/1/tweets"] = [Respuesta(500)] * ingesta.MAX_INTENTOS
+        r = ingesta.correr(self.con, self.cliente(), self.cuentas)
+        self.assertIn("500", r["errores"]["ana"])
+        self.assertEqual(r["nuevos"], {"beto": 1})
+
+    def test_cuenta_inexistente_no_detiene_a_las_demas(self):
+        r = ingesta.correr(self.con, self.cliente(), dict(self.cuentas, fantasma="no existe"))
+        self.assertIn("fantasma", r["errores"])
+        self.assertEqual(r["nuevos"], {"ana": 3, "beto": 1})
+        # solo se cobran las cuentas encontradas
+        self.assertAlmostEqual(ingesta.gastado_este_mes(self.con), 2 * 0.02 + 4 * 0.01)
 
     def test_inmutabilidad(self):
         ingesta.correr(self.con, self.cliente(), self.cuentas)

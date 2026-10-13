@@ -118,9 +118,12 @@ Requiere `X_BEARER`, `X_PRECIO_POST_USD` y `X_PRECIO_USUARIO_USD` en `.env`.
 - Una cuenta nueva solo trae sus `MAX_POR_CUENTA` (20) posts más recientes.
   En las corridas siguientes se usa `since_id`. Si una cuenta publica más de 20
   posts entre corridas, los más antiguos de ese intervalo no se traen.
-- Si una cuenta falla, se registra el error y se sigue con las demás. Ante un
-  429, se espera hasta `x-rate-limit-reset` (máximo 15 minutos) y se reintenta
-  una vez.
+- Las cuentas nuevas se buscan en lote con `users/by` (hasta 100 por llamada).
+  Las que X no encuentra se registran como error, sin detener a las demás.
+- Si una cuenta falla, se registra el error y se sigue con las demás. Las
+  fallas de red y los errores 5xx se reintentan con espera creciente (2 s, 4 s;
+  `MAX_INTENTOS` = 3). Ante un 429, se espera una sola vez hasta
+  `x-rate-limit-reset` (máximo 15 minutos). Otros 4xx no se reintentan.
 
 Corrida diaria a las 8:00 con cron (`crontab -e`):
 
@@ -129,3 +132,42 @@ Corrida diaria a las 8:00 con cron (`crontab -e`):
 ```
 
 Pruebas: `PYTHONPATH=. python -m unittest tests/test_ingesta.py`
+
+## Extractor
+
+`extractor.py` lee `tweets_crudos` y hace dos cosas:
+
+1. **Predicciones.** Por cada post pendiente, el modelo propone las
+   predicciones verificables, usando los tipos de `ficha.py` (`precio_mayor`,
+   `precio_menor`, `supera_a`). El código valida cada una: ticker, tipo,
+   precio > 0, plazo de 1 a 365 días y una `cita` que aparezca literal en el
+   post. Si falla, se reintenta una vez con los errores. Si vuelve a fallar, el
+   post queda `rechazado` y no se paga otra vez. Si el post no da un plazo, el
+   código asigna `HORIZONTE_DIAS` (30) y lo marca como `plazo_explicito = 0`.
+2. **Fuentes.** Escribe `fuentes/x-<cuenta>-<fecha>.md` para el investigador
+   de `contrapeso_m1.py`, solo con las cuentas activas.
+
+```sh
+python extractor.py              # extrae (hasta MAX_POSTS = 50 posts) y escribe fuentes
+python extractor.py --fuentes    # solo fuentes, sin LLM ni costo
+python extractor.py --listar     # predicciones extraídas
+python extractor.py --verificar  # cadena de hashes + integridad de las predicciones
+```
+
+`extracciones` y `predicciones` viven en `ingesta.db` con triggers que
+bloquean `UPDATE` y `DELETE`. Cada extracción queda en la bitácora encadenada
+con un digesto de sus predicciones. Si cambias el prompt o las reglas, sube
+`VERSION`: todo se vuelve a extraer y lo anterior se conserva.
+
+El modelo se elige con `EXTRACTOR_LLM_PROVIDER` y `EXTRACTOR_MODELO`. Con
+Kimi, `EXTRACTOR_PRECIO_ENTRADA_USD_M` y `EXTRACTOR_PRECIO_SALIDA_USD_M` son
+obligatorios. El gasto se anota en `gastos.jsonl` y comparte el techo mensual
+de `contrapeso_m1.py`. Se revisa antes de cada llamada con el peor caso.
+
+Para la corrida diaria, después de la ingesta:
+
+```cron
+0 8 * * * cd /ruta/a/CONTRAPESO && .venv/bin/python ingesta.py >> logs/ingesta.log 2>&1; .venv/bin/python extractor.py >> logs/extractor.log 2>&1
+```
+
+Pruebas: `PYTHONPATH=. python -m unittest tests/test_extractor.py`
