@@ -148,8 +148,19 @@ Pruebas: `PYTHONPATH=. python -m unittest tests/test_ingesta.py`
    predicciones verificables, usando los tipos de `ficha.py` (`precio_mayor`,
    `precio_menor`, `supera_a`). El código valida cada una: ticker, tipo,
    precio > 0, plazo de 1 a 365 días y una `cita` que aparezca literal en el
-   post. Si falla, se reintenta una vez con los errores. Si vuelve a fallar, el
-   post queda `rechazado` y no se paga otra vez. Si el post no da un plazo, el
+   post y que el token (y la referencia de `supera_a`) se mencione en el post,
+   por ticker o por nombre (`ALIAS`: bitcoin→BTC, ethereum→ETH, …). La cita se
+   compara sin distinguir entidades HTML (`&amp;`), comillas tipográficas,
+   espacios ni mayúsculas. Si el modelo agrega campos que no se pidieron, la
+   salida se rechaza. Si algo falla, se reintenta una vez con los motivos. Si
+   vuelve a fallar, el post queda `rechazado` y no se paga otra vez.
+   Cada rechazo se guarda con un código (`CITA_NO_LITERAL`,
+   `ACTIVO_NO_MENCIONADO`, `FORMATO`, …) en `extracciones.detalle`.
+   Los posts que intentan dar instrucciones a una IA quedan `aislados`, sin
+   predicciones. Se detectan por reglas en el código (`INYECCION`), antes de
+   llamar al modelo. Si es el modelo quien reporta `contiene_instrucciones`,
+   el post no se aísla: queda marcado para revisión (`--marcados`), porque un
+   modelo pequeño da falsos positivos y aislaría predicciones reales. Si el post no da un plazo, el
    código asigna `HORIZONTE_DIAS` (30) y lo marca como `plazo_explicito = 0`.
 2. **Fuentes.** Escribe `fuentes/x-<cuenta>-<fecha>.md` para el investigador
    de `contrapeso_m1.py`, solo con las cuentas activas.
@@ -158,6 +169,7 @@ Pruebas: `PYTHONPATH=. python -m unittest tests/test_ingesta.py`
 python extractor.py              # extrae (hasta MAX_POSTS = 50 posts) y escribe fuentes
 python extractor.py --fuentes    # solo fuentes, sin LLM ni costo
 python extractor.py --listar     # predicciones extraídas
+python extractor.py --marcados   # posts que el modelo marcó como instrucciones a una IA
 python extractor.py --verificar  # cadena de hashes + integridad de las predicciones
 ```
 
