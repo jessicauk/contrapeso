@@ -6,3 +6,7 @@ python-dotenv
 chromadb
 requests>=2.31
 PyYAML>=6.0
+# extractor.py y contrapeso_m1.py usan la API de Pydantic 2 (ConfigDict, model_validate_json)
+pydantic>=2.0
+# ingesta.py --anclar: sello de la bitácora en Bitcoin (comando `ots`)
+opentimestamps-client>=0.7.2
