@@ -92,3 +92,40 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## Ingesta de X
+
+`ingesta.py` trae los posts de las cuentas de `cuentas.yaml` a `ingesta.db`
+(SQLite, excluida de Git). Cada cuenta necesita una `razon`; si alguna no la
+tiene, el script se niega a correr.
+
+```sh
+python ingesta.py --cuenta TraderSteve_   # primera prueba con una sola cuenta
+python ingesta.py --gasto                 # gasto del mes contra CONTRAPESO_TOPE_USD
+python ingesta.py                         # todas las cuentas
+python ingesta.py --verificar             # recalcula la cadena de hashes
+```
+
+Requiere `X_BEARER`, `X_PRECIO_POST_USD` y `X_PRECIO_USUARIO_USD` en `.env`.
+
+- `tweets_crudos` y `eventos` tienen triggers que bloquean `UPDATE` y `DELETE`.
+- Cada corrida, llamada a X, alta, retiro o cambio de razón de una cuenta queda
+  en `eventos`, encadenado con SHA-256. `--verificar` detecta alteraciones,
+  incluidos cambios en los posts guardados.
+- El tope se revisa antes de cada llamada con el peor caso
+  (`max_results × precio`). El costo registrado es una estimación basada en
+  los posts devueltos.
+- Una cuenta nueva solo trae sus `MAX_POR_CUENTA` (20) posts más recientes.
+  En las corridas siguientes se usa `since_id`. Si una cuenta publica más de 20
+  posts entre corridas, los más antiguos de ese intervalo no se traen.
+- Si una cuenta falla, se registra el error y se sigue con las demás. Ante un
+  429, se espera hasta `x-rate-limit-reset` (máximo 15 minutos) y se reintenta
+  una vez.
+
+Corrida diaria a las 8:00 con cron (`crontab -e`):
+
+```cron
+0 8 * * * cd /ruta/a/CONTRAPESO && .venv/bin/python ingesta.py >> logs/ingesta.log 2>&1
+```
+
+Pruebas: `PYTHONPATH=. python -m unittest tests/test_ingesta.py`

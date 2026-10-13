@@ -1,0 +1,10 @@
+# Lista de cuentas
+# Toda cuenta necesita una "razon": por qué confías en ella como fuente.
+# Agregar o quitar una cuenta queda registrado en la bitácora.
+cuentas:
+  - username: TraderSteve_
+    razon: swing cripto trader verificado
+  - username: DieguitoCharts
+    razon: day cripto trader verificado
+
+

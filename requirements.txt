@@ -4,3 +4,5 @@ langchain-openai
 crewai
 python-dotenv
 chromadb
+requests>=2.31
+PyYAML>=6.0

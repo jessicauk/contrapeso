@@ -8,3 +8,6 @@ logs/
 gastos.jsonl
 fuentes/*.md
 !fuentes/LEEME.md
+
+# Base de la ingesta (posts de X y bitácora encadenada)
+ingesta.db
