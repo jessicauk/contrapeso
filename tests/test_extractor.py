@@ -202,6 +202,30 @@ class ExtractorTests(unittest.TestCase):
                                                   "REFERENCIA_INVALIDA", "TIPO_INVALIDO"])
         self.assertIn("TIPO_INVALIDO: tipo 'precio_alto'", self.falso.vistos[1][-1][1])
 
+    def test_niveles_operativos(self):
+        casos = {
+            "Stop loss at 58k on BTC, entry 61k": [58000, 61000],
+            "SL: 2,950 en ETH": [2950],
+            "Entrada 61-62k, target 75k": [61000, 62000],
+            "zona de compra $3.2k": [3200],
+            "invalidación bajo 55.000": [55000],
+            "BTC a 150k antes de fin de año": [],
+            "no stop until 100k": [],
+        }
+        for cita, esperado in casos.items():
+            self.assertEqual(extractor.niveles_operativos(cita), esperado, cita)
+
+    def test_stop_loss_no_es_prediccion_pero_el_target_si(self):
+        self.insertar(post(1, "BTC: entry 61k, stop loss at 58k, target 75k"))
+        mala = {"predicciones": [{"token": "BTC", "tipo": "precio_menor", "referencia": 58000,
+                                  "cita": "stop loss at 58k"}]}
+        buena = {"predicciones": [{"token": "BTC", "tipo": "precio_mayor", "referencia": 75000,
+                                   "cita": "BTC: entry 61k, stop loss at 58k, target 75k"}]}
+        r = extractor.extraer(self.con, self.modelo(mala, buena))
+        self.assertEqual(r["prediccion"], 1)
+        self.assertIn("NIVEL_OPERATIVO", self.falso.vistos[1][-1][1])
+        self.assertEqual(self.predicciones()[0][:3], ("BTC", "precio_mayor", "75000"))
+
     def test_5_campos_inventados_se_rechazan(self):
         self.insertar(post(1, "ETH a 4k"))
         mala = {"predicciones": [{"token": "ETH", "tipo": "precio_mayor", "referencia": 4000,

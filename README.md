@@ -154,6 +154,9 @@ Pruebas: `PYTHONPATH=. python -m unittest tests/test_ingesta.py`
    espacios ni mayúsculas. Si el modelo agrega campos que no se pidieron, la
    salida se rechaza. Si algo falla, se reintenta una vez con los motivos. Si
    vuelve a fallar, el post queda `rechazado` y no se paga otra vez.
+   Si el precio predicho va pegado en la cita a "stop loss", "SL", "entry",
+   "entrada" o "invalidación", se rechaza como `NIVEL_OPERATIVO`: es un nivel
+   de la operación, no un pronóstico. El objetivo ("target 75k") sí pasa.
    Cada rechazo se guarda con un código (`CITA_NO_LITERAL`,
    `ACTIVO_NO_MENCIONADO`, `FORMATO`, …) en `extracciones.detalle`.
    Los posts que intentan dar instrucciones a una IA quedan `aislados`, sin

@@ -48,7 +48,7 @@ from llm import settings, provider
 BASE = Path(__file__).parent
 FUENTES = BASE / "fuentes"
 GASTOS = BASE / "gastos.jsonl"
-VERSION = 2                     # súbela si cambias el prompt o las reglas: re-extrae todo
+VERSION = 3                     # súbela si cambias el prompt o las reglas: re-extrae todo
 MAX_POSTS = 50                  # L. posts por corrida
 MAX_TOKENS = 600                # L. tope de salida por llamada
 MAX_REINTENTOS = 1              # I. segundo intento con los errores de validación
@@ -66,6 +66,14 @@ ALIAS = {
     "LTC": ("litecoin",), "TON": ("toncoin",), "APT": ("aptos",), "ARB": ("arbitrum",),
     "OP": ("optimism",), "TRX": ("tron",), "NEAR": ("near protocol",),
 }
+
+# Niveles de una operación (no son pronósticos): el número que sigue a estas palabras.
+PALABRAS_OPERATIVAS = (r"stop[\s-]?loss|\bsl\b|\bstop\b|\bentry\b|\bentrada\b|\bentro\b|\bentré\b"
+                       r"|invalidaci[oó]n|invalidation|zona de (?:compra|entrada)|buy(?:ing)? zone")
+NUMERO = r"\d+(?:[.,]\d+)*"
+NIVEL = re.compile(rf"(?:{PALABRAS_OPERATIVAS})\W*(?:(?:at|en|a|@|on|of|de|bajo|below|under|"
+                   rf"sobre|above|in|is|es|:)\W+){{0,3}}\$?({NUMERO})\s*([km])?"
+                   rf"(?:\s*[-–]\s*\$?({NUMERO})\s*([km])?)?")
 
 # A. Frases con que un post intenta dar órdenes a una IA. Se revisan en CÓDIGO, antes del modelo,
 # porque un modelo que ya cayó en la trampa no es confiable para avisar que cayó.
@@ -215,6 +223,31 @@ def intenta_instruir(texto: str) -> bool:
     return INYECCION.search(normalizar(texto)) is not None
 
 
+def a_numero(texto: str, sufijo: str | None) -> float:
+    """'61,000' -> 61000, '3,5' -> 3.5, '61.5' + 'k' -> 61500."""
+    if re.fullmatch(r"\d{1,3}(,\d{3})+(\.\d+)?", texto):
+        texto = texto.replace(",", "")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", texto) and not sufijo:  # 61.000 al estilo español
+        texto = texto.replace(".", "")
+    else:
+        texto = texto.replace(",", ".")
+    return float(texto) * {"k": 1e3, "m": 1e6}.get(sufijo or "", 1)
+
+
+def niveles_operativos(cita: str) -> list[float]:
+    """Precios que en la cita van pegados a stop loss, SL, entry, entrada, invalidación..."""
+    niveles = []
+    for m in NIVEL.finditer(normalizar(cita)):
+        n1, s1, n2, s2 = m.groups()
+        try:
+            niveles.append(a_numero(n1, s1 or s2))  # en '61-62k' la k aplica a los dos
+            if n2:
+                niveles.append(a_numero(n2, s2))
+        except ValueError:
+            continue
+    return niveles
+
+
 def motivo(codigo: str, detalle: str, i: int | None = None) -> dict:
     return {"codigo": codigo, "detalle": detalle, "prediccion": i}
 
@@ -248,6 +281,10 @@ def validar(salida: SalidaLLM, texto: str, fecha_post: date) -> tuple[list[dict]
             except (TypeError, ValueError):
                 e.append(motivo("REFERENCIA_INVALIDA", f"precio '{p.referencia}'", i))
                 referencia = None
+            else:
+                if any(abs(n - referencia) <= referencia * 0.005 for n in niveles_operativos(p.cita)):
+                    e.append(motivo("NIVEL_OPERATIVO", f"{referencia} es un stop o una entrada en la "
+                                    "cita, no un pronóstico", i))
         if p.plazo_dias is not None and not 1 <= p.plazo_dias <= HORIZONTE_MAX_DIAS:
             e.append(motivo("PLAZO_FUERA_DE_RANGO", f"plazo_dias = {p.plazo_dias}", i))
         if len(p.cita.strip()) < 3 or normalizar(p.cita) not in normalizar(texto):
