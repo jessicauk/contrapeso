@@ -193,3 +193,42 @@ Para la corrida diaria, después de la ingesta:
 ```
 
 Pruebas: `PYTHONPATH=. python -m unittest tests/test_extractor.py`
+
+## Validador de resultados
+
+`resultados.py` decide en código, sin LLM, si cada predicción vencida se
+cumplió. Usa velas diarias en UTC de `TOKENUSDT` de los datos públicos de
+Binance (`data-api.binance.vision`), sin clave ni costo. Solo resuelve cuando
+el día de `fecha_resolucion` ya cerró en UTC.
+
+```sh
+python resultados.py              # resuelve las predicciones vencidas
+python resultados.py --historial  # aciertos por cuenta
+python resultados.py --fichas     # resuelve tus fichas vencidas (pide s/n)
+python resultados.py --verificar  # cadena + predicciones + resultados
+```
+
+- `precio_mayor` / `precio_menor`: se guardan dos lecturas.
+  - **Al cierre:** el cierre del día de resolución quedó por encima o por
+    debajo del objetivo.
+  - **Tocó:** el máximo o el mínimo alcanzó el objetivo entre el día
+    siguiente al post y el de resolución. El día del post no cuenta, porque
+    el precio pudo moverse antes del post.
+- `supera_a`: el rendimiento del token contra el de la referencia, del cierre
+  del día del post al cierre del día de resolución.
+- **Triviales:** las predicciones que ya se cumplían al publicarse se marcan
+  y no cuentan en el historial.
+- Si Binance no lista el token o faltan velas, la predicción queda pendiente y
+  se reintenta. El intento queda en la bitácora.
+- `resultados` vive en `ingesta.db` con triggers que bloquean `UPDATE` y
+  `DELETE`. Cada resultado queda en la bitácora encadenada con su digesto.
+- `--fichas` resuelve tus fichas al cierre y solo escribe
+  `resultado` y `resultado_detalle` si respondes `s`.
+
+Cron diario completo:
+
+```cron
+0 8 * * * cd /ruta/a/CONTRAPESO && .venv/bin/python ingesta.py >> logs/ingesta.log 2>&1; .venv/bin/python extractor.py >> logs/extractor.log 2>&1; .venv/bin/python resultados.py >> logs/resultados.log 2>&1
+```
+
+Pruebas: `PYTHONPATH=. python -m unittest tests/test_resultados.py`
