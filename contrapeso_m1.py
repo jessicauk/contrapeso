@@ -49,10 +49,15 @@ LOG = BASE / "logs"
 
 
 # ---------------- L. LÍMITES: la única herramienta, de solo lectura ----------------
+def fuentes_permitidas() -> dict[str, Path]:
+    """Archivos .md de fuentes/, sin LEEME.md: las instrucciones de la carpeta no son evidencia."""
+    return {p.name: p for p in FUENTES.glob("*.md") if p.name != "LEEME.md"}
+
+
 @tool("leer_fuente_permitida")
 def leer_fuente_permitida(nombre: str) -> str:
     """Lee una fuente autorizada por su nombre de archivo. Escribe 'lista' para ver cuáles hay."""
-    permitidas = {p.name: p for p in FUENTES.glob("*.md")}
+    permitidas = fuentes_permitidas()
     if nombre.strip() == "lista":
         return "Fuentes permitidas: " + ", ".join(sorted(permitidas)) if permitidas else "No hay fuentes."
     p = permitidas.get(Path(nombre.strip()).name)  # .name evita rutas como ../../
@@ -131,7 +136,7 @@ def registrar_evento(ruta: Path, evento: str, **datos):
 
 # ---------------- Validación determinista después del LLM (diapositiva 22) ----------------
 def validar(analisis: Analisis) -> list[str]:
-    permitidas = {p.name for p in FUENTES.glob("*.md")}
+    permitidas = set(fuentes_permitidas())
     errores = [f"fuente no permitida o inventada: '{c.fuente}'"
                for c in analisis.contraargumentos if c.fuente not in permitidas]
     if not analisis.contraargumentos:

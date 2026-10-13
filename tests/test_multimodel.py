@@ -38,6 +38,20 @@ class MultimodelTests(unittest.TestCase):
         os.environ['MOONSHOT_API_KEY'] = 'test-key'
         self.assertEqual(llm.settings('director')['model'], 'kimi-k3')
 
+    def test_kimi_thinking_default_override_and_invalid(self):
+        os.environ.update(LLM_PROVIDER='kimi', MOONSHOT_API_KEY='test-key')
+        thinking = lambda a=None: llm.settings(a)['extra_body']['thinking']['type']
+        self.assertEqual(thinking(), 'disabled')
+        os.environ['DIRECTOR_KIMI_THINKING'] = ' Enabled '
+        self.assertEqual(thinking('director'), 'enabled')
+        self.assertEqual(thinking('auditor'), 'disabled')
+        os.environ['KIMI_THINKING'] = 'true'
+        with self.assertRaisesRegex(ValueError, '^KIMI_THINKING'):
+            llm.settings('auditor')
+        os.environ['DIRECTOR_KIMI_THINKING'] = 'si'
+        with self.assertRaisesRegex(ValueError, '^DIRECTOR_KIMI_THINKING'):
+            llm.settings('director')
+
     def test_tariffs_required_for_remote(self):
         self.assertEqual(modulo.tarifas_agente('DIRECTOR'), (0, 0))
         os.environ['DIRECTOR_LLM_PROVIDER'] = 'kimi'

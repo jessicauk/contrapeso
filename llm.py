@@ -25,9 +25,15 @@ def settings(agent=None):
         key = os.getenv('MOONSHOT_API_KEY', '').strip()
         if not key:
             raise ValueError('Configura MOONSHOT_API_KEY en .env para usar Kimi.')
+        # Sin razonamiento por defecto: sus tokens cuentan dentro de max_tokens y
+        # pueden agotarlo antes de la respuesta. KIMI_THINKING=enabled lo activa.
+        var = prefix + 'KIMI_THINKING' if os.getenv(prefix + 'KIMI_THINKING') else 'KIMI_THINKING'
+        thinking = os.getenv(var, 'disabled').strip().lower()
+        if thinking not in ('disabled', 'enabled'):
+            raise ValueError(f'{var} debe ser disabled o enabled.')
         return dict(model=model or os.getenv('KIMI_MODEL', 'kimi-k3'),
                     base_url=os.getenv('KIMI_BASE_URL', 'https://api.moonshot.ai/v1'),
-                    api_key=key)
+                    api_key=key, extra_body={'thinking': {'type': thinking}})
     raise ValueError('LLM_PROVIDER debe ser ollama o kimi.')
 
 

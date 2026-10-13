@@ -25,7 +25,14 @@ LLM_PROVIDER=kimi
 MOONSHOT_API_KEY=REEMPLAZA_CON_TU_CLAVE_REAL
 KIMI_BASE_URL=https://api.moonshot.ai/v1
 KIMI_MODEL=kimi-k3
+KIMI_THINKING=disabled
 ```
+
+`KIMI_THINKING` activa (`enabled`) o desactiva (`disabled`, predeterminado) el
+razonamiento de Kimi. Sus tokens cuentan dentro de `max_tokens` y del costo,
+y pueden agotar el límite antes de la respuesta. Se puede ajustar por agente
+con `<AGENTE>_KIMI_THINKING` (por ejemplo `DIRECTOR_KIMI_THINKING=enabled`).
+Cualquier otro valor detiene la ejecución con un error claro.
 
 Ejecuta el mismo comando `python llm.py`. El script carga `.env`
 automáticamente; las variables exportadas en la terminal tienen prioridad.
