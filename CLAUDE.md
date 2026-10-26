@@ -1,8 +1,9 @@
 # CLAUDE.md
 
 Contrapeso: diario de decisiones cripto con agentes (CrewAI), ingesta de X
-y validación de predicciones con precios de Binance. Uso y configuración en
-[README.md](README.md).
+y validación de predicciones con precios de Binance. Uso en
+[README.md](README.md); agentes, configuración y archivos generados en
+[docs/](docs/).
 
 ## Comandos
 
