@@ -66,3 +66,10 @@ PYTHONPATH=. python -m unittest discover -s tests   # correr antes de cada commi
 - Mensajes de error claros para el usuario; fallar pronto en vez de
   continuar con datos dudosos.
 - Dependencias nuevas van en `requirements.txt` con versión mínima.
+
+### Autoría
+- **Cero rastro de IA en el repositorio.** Ni `Co-Authored-By` de un
+  asistente, ni "Generated with", ni menciones a la herramienta en mensajes
+  de commit, código, comentarios, documentación, PRs, reviews o nombres de
+  rama. El trabajo lo firma quien lo publica. Si un mensaje ya redactado trae
+  esa atribución, se quita antes de commitear, no después.
